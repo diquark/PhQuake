@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // vid_ph.c -- Photon video driver
 
 #include <unistd.h>
+#include <ctype.h>
 #include <Ap.h>
 #include <Ph.h>
 #include <Pt.h>
@@ -485,7 +486,7 @@ void VID_Init (unsigned char *palette)
 //
 //  Translates the key
 //  Use keycap, becase keysym is not valid on release
-//
+//  Return -1 to ignore the key
 static int translatekey(unsigned long keycap)
 {
     int rc;
@@ -541,11 +542,22 @@ static int translatekey(unsigned long keycap)
       case Pk_KP_Add: rc = '+'; break;
       case Pk_KP_Subtract: rc = '-'; break;
       case Pk_KP_Divide: rc = '/'; break;
-
+      case Pk_KP_Decimal: rc = '.'; break;
+      
+      case Pk_KP_0: rc = Pk_0; break;
+      case Pk_KP_1: rc = Pk_1; break;
+      case Pk_KP_2: rc = Pk_2; break;
+      case Pk_KP_3: rc = Pk_3; break;
+      case Pk_KP_4: rc = Pk_4; break;
+      case Pk_KP_5: rc = Pk_5; break;
+      case Pk_KP_6: rc = Pk_6; break;
+      case Pk_KP_7: rc = Pk_7; break;
+      case Pk_KP_8: rc = Pk_8; break;
+      case Pk_KP_9: rc = Pk_9; break;
+      
       default:
-        rc = keycap;
-        if (rc >= 'A' && rc <= 'Z')
-          rc = rc - 'A' + 'a';
+        rc = (keycap >= Pk_space && keycap <= Pk_asciitilde ) ?
+              tolower(keycap) : -1;
         break;
     }
     return rc;
@@ -588,12 +600,16 @@ static void GetEvent(void)
       if (PkIsFirstDown(ph_ev.key_ev->key_flags))
       {
         keyq[keyq_head].key = translatekey(ph_ev.key_ev->key_cap);
+        if (keyq[keyq_head].key == -1)
+          break;
         keyq[keyq_head].down = true;
         keyq_head = (keyq_head + 1) & 63;
       }
       else if (PkIsReleased(ph_ev.key_ev->key_flags))
       {
         keyq[keyq_head].key = translatekey(ph_ev.key_ev->key_cap);
+        if (keyq[keyq_head].key == -1)
+          break;
         keyq[keyq_head].down = false;
         keyq_head = (keyq_head + 1) & 63;
       }
@@ -619,8 +635,8 @@ static void GetEvent(void)
         mouse_x = ph_ev.ptr_ev->pos.x - p_mouse_x;
         mouse_y = ph_ev.ptr_ev->pos.y - p_mouse_y;
         
-        p_mouse_x = ph_ev.ptr_ev->pos.x;
-        p_mouse_y = ph_ev.ptr_ev->pos.y;
+        //p_mouse_x = ph_ev.ptr_ev->pos.x;
+        //p_mouse_y = ph_ev.ptr_ev->pos.y;
         
         mouse_moved = true;
       }
