@@ -28,13 +28,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "d_local.h"
 
-#define BASEWIDTH 320
-#define BASEHEIGHT 200
-
 #define PkIsReleased( f ) ((f & (Pk_KF_Key_Down|Pk_KF_Key_Repeat)) == 0)
 
 unsigned short d_8to16table[256];
-unsigned d_8to24table[256];
 
 static PhImage_t *ph_framebuffer;
 
@@ -65,8 +61,136 @@ static void *vid_surfcache;
 static qboolean palette_changed = true;
 static qboolean calc_crc;
 
-//static short zbuffer[BASEWIDTH*BASEHEIGHT];
-//static byte surfcache[256*1024];
+typedef struct vidmode_s
+{
+  const char *description;
+  int         width, height;
+} vidmode_t;
+
+vidmode_t vid_modes[] =
+{
+    { "320x240",   320,  240  },
+    { "640x480",   640,  480  },
+    { "800x600",   800,  600  },
+    { "1024x768",  1024, 768  },
+    { "1280x1024", 1280, 1024 }
+};
+#define VID_NUM_MODES ( sizeof( vid_modes ) / sizeof( vid_modes[0] ) )
+
+extern void M_Menu_Options_f (void);
+extern void M_Print(int cx, int cy, char *str);
+extern void M_PrintWhite(int cx, int cy, char *str);
+extern void M_DrawCharacter(int cx, int line, int num);
+extern void M_DrawPic(int x, int y, qpic_t *pic);
+
+static qboolean vid_changed;
+cvar_t vid_mode = {"vid_mode", "0", false};
+
+static int VID_ChangeMode(int modenum)
+{
+  if ((modenum >= VID_NUM_MODES) || (modenum < 0))
+  {
+    Con_Printf("No such video mode %d\n", modenum);
+    modenum = 0;
+  }
+  vid_changed = true;
+  Cvar_SetValue("vid_mode", (float)modenum);
+  return 1;
+}
+
+static int vid_line, vid_column_size;
+
+static void VID_MenuDraw(void)
+{
+#define MAX_COLUMN_SIZE 11
+  qpic_t *p;
+  int i, row, column;
+  
+  p = Draw_CachePic("gfx/vidmodes.lmp");
+  M_DrawPic((320-p->width)/2, 4, p);
+  
+  vid_column_size = (VID_NUM_MODES + 2) / 3;
+  
+  column = 16;
+  row = 36;
+  for (i = 0; i < VID_NUM_MODES; i++)
+  {
+    M_Print(column, row, vid_modes[i].description);
+    
+    row += 8;
+    if ((i % vid_column_size) == (vid_column_size - 1))
+    {
+      column += 13*8;
+      row = 36;
+    }
+  }
+  
+  M_Print(9*8, 36 + MAX_COLUMN_SIZE * 8 + 8 * 7,
+          "Press Enter to set mode");
+  M_Print(15*8, 36 + MAX_COLUMN_SIZE * 8 + 8 * 8,
+          "Esc to exit");
+  row = 36 + (vid_line % vid_column_size) * 8;
+  column = 8 + (vid_line / vid_column_size) * 13*8;
+
+  M_DrawCharacter (column, row, 12+((int)(realtime*4)&1));
+}
+
+static void VID_MenuKey(int key)
+{
+  switch (key)
+  {
+    case K_ESCAPE:
+      S_LocalSound("misc/menu1.wav");
+      M_Menu_Options_f();
+      break;
+    case K_UPARROW:
+      S_LocalSound ("misc/menu1.wav");
+      vid_line--;
+
+      if (vid_line < 0)
+        vid_line = VID_NUM_MODES - 1;
+      break;
+    case K_DOWNARROW:
+      S_LocalSound ("misc/menu1.wav");
+      vid_line++;
+
+      if (vid_line >= VID_NUM_MODES)
+        vid_line = 0;
+      break;
+    case K_LEFTARROW:
+      S_LocalSound ("misc/menu1.wav");
+      vid_line -= vid_column_size;
+
+      if (vid_line < 0)
+      {
+        vid_line += ((VID_NUM_MODES + (vid_column_size - 1)) /
+					vid_column_size) * vid_column_size;
+
+        while (vid_line >= VID_NUM_MODES)
+          vid_line -= vid_column_size;
+      }
+      break;
+    case K_RIGHTARROW:
+      S_LocalSound ("misc/menu1.wav");
+      vid_line += vid_column_size;
+
+      if (vid_line >= VID_NUM_MODES)
+      {
+        vid_line -= ((VID_NUM_MODES + (vid_column_size - 1)) /
+        vid_column_size) * vid_column_size;
+
+			  while (vid_line < 0)
+				  vid_line += vid_column_size;
+		  }
+      break;
+    case K_ENTER:
+      S_LocalSound ("misc/menu1.wav");
+      VID_ChangeMode (vid_line);
+      break;
+    default:
+      break;
+  }
+}
 
 typedef enum
 {
@@ -168,6 +292,7 @@ static PtWidget_t* LoadIcon(void)
 
 static void ResetFrameBuffer(void)
 {
+  static PgColor_t *palette;
   if (ph_framebuffer)
   {
     PhReleaseImage(ph_framebuffer);
@@ -208,7 +333,7 @@ static void ResetFrameBuffer(void)
   ph_framebuffer = (PhImage_t*)calloc(1, sizeof(*ph_framebuffer));
   if (!ph_framebuffer)
     Sys_Error("VID: Could not allocate memory for image header");
-  ph_framebuffer->flags = Ph_RELEASE_IMAGE_ALL;
+  ph_framebuffer->flags = Ph_RELEASE_IMAGE;
   ph_framebuffer->type = Pg_IMAGE_PALETTE_BYTE;
   ph_framebuffer->size.w = vid.width;
   ph_framebuffer->size.h = vid.height;
@@ -217,10 +342,14 @@ static void ResetFrameBuffer(void)
   if (!ph_framebuffer->image)
     Sys_Error("VID: Could not allocate shared memory for image pixel data");
   ph_framebuffer->colors = 256;
-  ph_framebuffer->palette = (PgColor_t*)calloc(ph_framebuffer->colors, sizeof(PgColor_t));
-  if (!ph_framebuffer->palette)
-    Sys_Error("VID: Could not allocate memory for image palette");
-
+  if (!palette)
+  {
+    palette = (PgColor_t*)calloc(ph_framebuffer->colors, sizeof(PgColor_t));
+    if (!palette)
+      Sys_Error("VID: Could not allocate memory for image palette");
+  }
+  ph_framebuffer->palette = palette;
+  
   vid.buffer = (pixel_t*) (ph_framebuffer->image);
   vid.conbuffer = vid.buffer;
   vid.rowbytes = ph_framebuffer->bpl;
@@ -237,19 +366,20 @@ void VID_Init (unsigned char *palette)
   char *displayname = NULL;
   PhChannelParms_t parms = {0, 0, Ph_DYNAMIC_BUFFER};
   PhDim_t dim;
-  PtArg_t arg[10];
+  PtArg_t arg[7];
   PtWidget_t *Icon;
   PhRid_t rid;
   PhRegion_t region;
   char *env_var;
   int pnum;
   
-  vid.width = BASEWIDTH;
-  vid.height = BASEHEIGHT;
+  vid.width = vid_modes[0].width;
+  vid.height = vid_modes[0].height;
   vid.maxwarpwidth = WARP_WIDTH;
   vid.maxwarpheight = WARP_HEIGHT;
   vid.numpages = 1;
-  vid.colormap = host_colormap;  vid.fullbright = 256 - LittleLong (*((int *)vid.colormap + 2048));
+  vid.colormap = host_colormap;
+  vid.fullbright = 256 - LittleLong (*((int *)vid.colormap + 2048));
 
   srand(getpid());
   
@@ -271,6 +401,8 @@ void VID_Init (unsigned char *palette)
     else
       Sys_Error("VID: Could not attach to Photon manager [/dev/photon]");
   }
+  
+  Cvar_RegisterVariable(&vid_mode);
   
   // check for command-line window size
   if ((pnum=COM_CheckParm("-winsize")))
@@ -322,12 +454,10 @@ void VID_Init (unsigned char *palette)
                     Ph_WM_CLOSE | Ph_WM_FOCUS,
                     Pt_TRUE);
   PtSetArg(&arg[5], Pt_ARG_DIM, &dim, 0);
-  PtSetArg(&arg[6], Pt_ARG_MIN_HEIGHT, dim.h, 0);
-  PtSetArg(&arg[7], Pt_ARG_MIN_WIDTH,  dim.w, 0);
-  PtSetArg(&arg[8], Pt_ARG_RESIZE_FLAGS, 0, Pt_TRUE);
+  PtSetArg(&arg[6], Pt_ARG_RESIZE_FLAGS, 0, Pt_TRUE);
 
   PtSetParentWidget(NULL);
-  Window = PtCreateWidget(PtWindow, NULL, 9, arg);
+  Window = PtCreateWidget(PtWindow, NULL, 7, arg);
   PtReParentWidget(Icon, Window);
   
   PtSetArg(&arg[0], Pt_ARG_DIM, &dim, 0);
@@ -347,6 +477,9 @@ void VID_Init (unsigned char *palette)
   MoveCursorToCenter();
   
   app = PtDefaultAppContext();
+  
+  vid_menudrawfn = VID_MenuDraw;
+  vid_menukeyfn = VID_MenuKey;
 }
 
 //
@@ -522,11 +655,19 @@ static void GetEvent(void)
 
 void VID_Shutdown (void)
 {
+  if (ph_framebuffer)
+  {
+    if(ph_framebuffer->palette)
+    {
+      free(ph_framebuffer->palette);
+      ph_framebuffer->palette = NULL;
+    }
+    PhReleaseImage(ph_framebuffer);
+    free(ph_framebuffer);
+    ph_framebuffer = NULL;
+  }
   // Remove shared memory references;
   PgShmemCleanup();
-  // Paranoia.
-  if (ph_framebuffer)
-    ph_framebuffer->image = NULL;
 }
 
 void VID_Update (vrect_t *rects)
@@ -535,25 +676,50 @@ void VID_Update (vrect_t *rects)
   
   //PtDamageWidget(Frame);
   
-  while (rects)
+  if (vid_changed)
   {
-    if (palette_changed)
-    {
-      extent.ul.x = 0;
-      extent.lr.x = vid.width - 1;
-      extent.ul.y = 0;
-      extent.lr.y = vid.height - 1;
-      PtDamageExtent(Frame, &extent);
-      break;
-    }
-    extent.ul.x = rects->x;
-    extent.lr.x = extent.ul.x + rects->width - 1;
-    extent.ul.y = rects->y;
-    extent.lr.y = extent.ul.y + rects->height - 1;
-    PtDamageExtent(Frame, &extent);
-
-    rects = rects->pnext;
+    PtArg_t arg;
+    PhDim_t dim;
+    
+    vid_changed = false;
+    vid.width = vid_modes[(int)vid_mode.value].width;
+    vid.height = vid_modes[(int)vid_mode.value].height;
+    ResetFrameBuffer();
+    vid.recalc_refdef = 1;
+    Con_CheckResize();
+    Con_Clear_f();
+    
+    dim.w = vid.width;
+    dim.h = vid.height;
+    PtSetArg(&arg, Pt_ARG_DIM, &dim, 0);
+    PtSetResources(Window, 1, &arg);
+    
+    PtSetArg(&arg, Pt_ARG_DIM, &dim, 0);
+    PtSetResources(Frame, 1, &arg);
+    
+    MoveCursorToCenter();
+    return;
   }
+  
+  if (palette_changed)
+  {
+    extent.ul.x = 0;
+    extent.lr.x = vid.width - 1;
+    extent.ul.y = 0;
+    extent.lr.y = vid.height - 1;
+    PtDamageExtent(Frame, &extent);
+  }
+  else
+    while (rects)
+    {
+      extent.ul.x = rects->x;
+      extent.lr.x = extent.ul.x + rects->width - 1;
+      extent.ul.y = rects->y;
+      extent.lr.y = extent.ul.y + rects->height - 1;
+      PtDamageExtent(Frame, &extent);
+
+      rects = rects->pnext;
+    }
   PtFlush();
 }
 
